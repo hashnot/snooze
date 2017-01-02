@@ -116,7 +116,12 @@ func (c *Client) Create(in interface{}) {
 			client:       c,
 			info:         info,
 			originalPath: fieldStruct.Tag.Get("path"),
-			method:       fieldStruct.Tag.Get("method"),
+		}
+
+		if method, ok := fieldStruct.Tag.Lookup("method"); ok {
+			wrapper.method = method
+		} else {
+			method = http.MethodGet
 		}
 
 		if contentType, ok := fieldStruct.Tag.Lookup("contentType"); ok {
