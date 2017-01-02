@@ -77,7 +77,7 @@ func (info *resultInfo) result(err error, bytes []byte) []reflect.Value {
 				case "application/json":
 					err = json.Unmarshal(bytes, target.Interface())
 				case "application/xml":
-					err = xml.Unmarshal(bytes, target.Interface())
+					fallthrough
 				case "text/xml":
 					err = xml.Unmarshal(bytes, target.Interface())
 				default:
@@ -103,22 +103,28 @@ func (c *Client) Create(in interface{}) {
 	inputValue := reflect.ValueOf(in).Elem()
 	inputType := inputValue.Type()
 	for i := 0; i < inputValue.NumField(); i++ {
-		fieldValue := inputValue.Field(i)
 		fieldStruct := inputType.Field(i)
 		fieldType := fieldStruct.Type
-		originalPath := fieldStruct.Tag.Get("path")
-		method := fieldStruct.Tag.Get("method")
-		contentType := fieldStruct.Tag.Get("contentType")
-		if contentType == "" {
-			contentType = "application/json"
-		}
-		var body interface{}
 
-		info := resultInfo{
+		info := &resultInfo{
 			resultLength: fieldType.NumOut(),
 			errorIndex:   -1,
 			payloadIndex: -1,
 		}
+
+		wrapper := &requestWrapper{
+			client:       c,
+			info:         info,
+			originalPath: fieldStruct.Tag.Get("path"),
+			method:       fieldStruct.Tag.Get("method"),
+		}
+
+		if contentType, ok := fieldStruct.Tag.Lookup("contentType"); ok {
+			wrapper.contentType = contentType
+		} else {
+			wrapper.contentType = "application/json"
+		}
+
 		for n := 0; n < info.resultLength; n++ {
 			out := fieldType.Out(n)
 			if out == reflect.TypeOf((*error)(nil)).Elem() {
@@ -129,81 +135,93 @@ func (c *Client) Create(in interface{}) {
 			}
 		}
 
-		fieldValue.Set(reflect.MakeFunc(fieldType, func(args []reflect.Value) []reflect.Value {
-			// Prepare Request Parameters
-			path := originalPath
-			for n, av := range args {
-				if av.Kind() == reflect.Struct || av.Kind() == reflect.Ptr {
-					body = av.Interface()
-					continue
-				}
-				path = strings.Replace(path, fmt.Sprintf("{%v}", n), url.QueryEscape(fmt.Sprint(av.Interface())), -1)
-			}
-
-			// Prepare Request Body
-			var err error
-			buffer := make([]byte, 0)
-			if method != "GET" && body != nil {
-
-				switch contentType {
-				case "application/json":
-					buffer, err = json.Marshal(body)
-				case "application/xml":
-					buffer, err = xml.Marshal(body)
-				default:
-					return info.result(fmt.Errorf("ContentType (%s) not supported.", contentType), nil)
-				}
-				if err != nil {
-					return info.result(err, nil)
-				}
-			}
-
-			// Prepare Request
-			req, err := http.NewRequest(method, c.Root+path, bytes.NewBuffer(buffer))
-			if err != nil {
-				return info.result(err, nil)
-			}
-			req.Header.Set("Content-Type", contentType)
-			client := c.Doer
-			if client == nil {
-				client = new(http.Client)
-			}
-			if c.Before != nil {
-				c.Before(req)
-			}
-
-			// Send Request
-			resp, err := c.Doer.Do(req)
-			if err != nil {
-				return info.result(err, nil)
-			}
-
-			// Process Response
-			info.responseContentType = resp.Header.Get("Content-Type")
-			bytes, err := ioutil.ReadAll(resp.Body)
-			if err != nil {
-				return info.result(err, nil)
-			}
-			if isErrorResponse(resp) {
-				apiErr := ErrorResponse{
-					Status:              resp.Status,
-					StatusCode:          resp.StatusCode,
-					ResponseBody:        bytes,
-					ResponseContentType: info.responseContentType,
-				}
-				var handled error
-				if c.HandleError != nil {
-					handled = c.HandleError(&apiErr)
-				} else {
-					handled = apiErr
-				}
-
-				return info.result(handled, nil)
-			} else {
-				return info.result(nil, bytes)
-			}
-		}))
+		fieldValue := inputValue.Field(i)
+		fieldValue.Set(reflect.MakeFunc(fieldType, wrapper.execute))
 	}
+}
+
+func (r *requestWrapper) execute(args []reflect.Value) []reflect.Value {
+	// Prepare Request Parameters
+	path := r.originalPath
+	var body interface{}
+	for n, av := range args {
+		if av.Kind() == reflect.Struct || av.Kind() == reflect.Ptr {
+			body = av.Interface()
+			continue
+		}
+		path = strings.Replace(path, fmt.Sprintf("{%v}", n), url.QueryEscape(fmt.Sprint(av.Interface())), -1)
+	}
+
+	// Prepare Request Body
+	var err error
+	buffer := make([]byte, 0)
+	if r.method != "GET" && body != nil {
+
+		switch r.contentType {
+		case "application/json":
+			buffer, err = json.Marshal(body)
+		case "application/xml":
+			buffer, err = xml.Marshal(body)
+		default:
+			return r.info.result(fmt.Errorf("ContentType (%s) not supported.", r.contentType), nil)
+		}
+		if err != nil {
+			return r.info.result(err, nil)
+		}
+	}
+
+	// Prepare Request
+	req, err := http.NewRequest(r.method, r.client.Root+path, bytes.NewBuffer(buffer))
+	if err != nil {
+		return r.info.result(err, nil)
+	}
+	req.Header.Set("Content-Type", r.contentType)
+	client := r.client.Doer
+	if client == nil {
+		client = new(http.Client)
+	}
+	if r.client.Before != nil {
+		r.client.Before(req)
+	}
+
+	// Send Request
+	resp, err := r.client.Doer.Do(req)
+	if err != nil {
+		return r.info.result(err, nil)
+	}
+
+	// Process Response
+	r.info.responseContentType = resp.Header.Get("Content-Type")
+	bytes, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return r.info.result(err, nil)
+	}
+	if isErrorResponse(resp) {
+		apiErr := ErrorResponse{
+			Status:              resp.Status,
+			StatusCode:          resp.StatusCode,
+			ResponseBody:        bytes,
+			ResponseContentType: r.info.responseContentType,
+		}
+		var handled error
+		if r.client.HandleError != nil {
+			handled = r.client.HandleError(&apiErr)
+		} else {
+			handled = apiErr
+		}
+
+		return r.info.result(handled, nil)
+	} else {
+		return r.info.result(nil, bytes)
+	}
+}
+
+type requestWrapper struct {
+	originalPath,
+	method,
+	contentType string
+	client *Client
+	info   *resultInfo
 }
 
 func isErrorResponse(r *http.Response) bool {
