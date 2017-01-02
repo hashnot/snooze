@@ -12,6 +12,14 @@ import (
 	"strings"
 )
 
+const (
+	mime_json     = "application/json"
+	mime_xml      = "application/xml"
+	mime_text_xml = "text/xml"
+
+	hdr_content_type = "Content-Type"
+)
+
 type Client struct {
 	Doer        Doer
 	Before      func(*http.Request)
@@ -71,14 +79,14 @@ func (info *resultInfo) result(err error, bytes []byte) []reflect.Value {
 						respContentType = respContentType[:strings.Index(respContentType, ";")]
 					}
 				} else {
-					respContentType = "application/json"
+					respContentType = mime_json
 				}
 				switch respContentType {
-				case "application/json":
+				case mime_json:
 					err = json.Unmarshal(bytes, target.Interface())
-				case "application/xml":
+				case mime_xml:
 					fallthrough
-				case "text/xml":
+				case mime_text_xml:
 					err = xml.Unmarshal(bytes, target.Interface())
 				default:
 					fmt.Printf("\nContent Type (%s) not supported by snooze.\n", respContentType)
@@ -127,7 +135,7 @@ func (c *Client) Create(in interface{}) {
 		if contentType, ok := fieldStruct.Tag.Lookup("contentType"); ok {
 			wrapper.contentType = contentType
 		} else {
-			wrapper.contentType = "application/json"
+			wrapper.contentType = mime_json
 		}
 
 		for n := 0; n < info.resultLength; n++ {
@@ -160,12 +168,12 @@ func (r *requestWrapper) execute(args []reflect.Value) []reflect.Value {
 	// Prepare Request Body
 	var err error
 	buffer := make([]byte, 0)
-	if r.method != "GET" && body != nil {
+	if r.method != http.MethodGet && body != nil {
 
 		switch r.contentType {
-		case "application/json":
+		case mime_json:
 			buffer, err = json.Marshal(body)
-		case "application/xml":
+		case mime_xml:
 			buffer, err = xml.Marshal(body)
 		default:
 			return r.info.result(fmt.Errorf("ContentType (%s) not supported.", r.contentType), nil)
@@ -180,7 +188,7 @@ func (r *requestWrapper) execute(args []reflect.Value) []reflect.Value {
 	if err != nil {
 		return r.info.result(err, nil)
 	}
-	req.Header.Set("Content-Type", r.contentType)
+	req.Header.Set(hdr_content_type, r.contentType)
 	client := r.client.Doer
 	if client == nil {
 		client = new(http.Client)
@@ -196,7 +204,7 @@ func (r *requestWrapper) execute(args []reflect.Value) []reflect.Value {
 	}
 
 	// Process Response
-	r.info.responseContentType = resp.Header.Get("Content-Type")
+	r.info.responseContentType = resp.Header.Get(hdr_content_type)
 	bytes, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
 		return r.info.result(err, nil)
