@@ -17,8 +17,9 @@ type api struct {
 
 func Example() {
 	client := Client{
+	    Doer: new(http.Client), // the default
 		Root: "http://example.com",
-		Before: func(r *http.Request, c *http.Client) {
+		Before: func(r *http.Request) {
 			values := r.URL.Query()
 			values.Add("session", "123456")
 			r.URL.RawQuery = values.Encode()

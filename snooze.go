@@ -13,9 +13,17 @@ import (
 )
 
 type Client struct {
-	Before      func(*http.Request, *http.Client)
+	Doer        Doer
+	Before      func(*http.Request)
 	HandleError func(*ErrorResponse) error
 	Root        string
+}
+
+// Doer executes http requests.  It is implemented by *http.Client.  You can
+// wrap *http.Client with layers of Doers to form a stack of client-side
+// middleware.
+type Doer interface {
+	Do(req *http.Request) (*http.Response, error)
 }
 
 type ErrorResponse struct {
@@ -156,13 +164,16 @@ func (c *Client) Create(in interface{}) {
 				return info.result(err, nil)
 			}
 			req.Header.Set("Content-Type", contentType)
-			client := new(http.Client)
+			client := c.Doer
+			if client == nil {
+				client = new(http.Client)
+			}
 			if c.Before != nil {
-				c.Before(req, client)
+				c.Before(req)
 			}
 
 			// Send Request
-			resp, err := client.Do(req)
+			resp, err := c.Doer.Do(req)
 			if err != nil {
 				return info.result(err, nil)
 			}
